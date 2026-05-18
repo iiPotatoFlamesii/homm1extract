@@ -16,16 +16,20 @@ find_package(ZLIB REQUIRED)
 set(SOURCES
     src/main.cpp
     src/agg.cpp
+    src/atk.cpp
+    src/bkg.cpp
     src/bmp.cpp
     src/icn.cpp
     src/image.cpp
     src/palette.cpp
+    src/std.cpp
     src/til.cpp
+    src/wav.cpp
 )
 
 add_executable(homm1_extract ${SOURCES})
 
-target_include_directories(homm1_extract PRIVATE include)
+target_include_directories(homm1_extract PRIVATE src/)
 
 target_link_libraries(homm1_extract PRIVATE ZLIB::ZLIB)
 

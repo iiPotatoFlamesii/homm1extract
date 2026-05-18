@@ -2,7 +2,11 @@
 .gitignore
 Heroes/
 HEROES/
+cpp_version/build/
 
 HEROES.AGG
 Heroes.AGG
 Heroes.agg
+kb.agg
+Kb.agg
+KB.AGG

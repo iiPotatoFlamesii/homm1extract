@@ -1,9 +1,13 @@
 #include "agg.h"
+#include "atk.h"
+#include "bkg.h"
 #include "bmp.h"
 #include "icn.h"
 #include "image.h"
 #include "palette.h"
+#include "std.h"
 #include "til.h"
+#include "wav.h"
 
 #include <algorithm>
 #include <cstring>
@@ -15,7 +19,7 @@
 
 namespace fs = std::filesystem;
 
-// Upper-case a string in place, return by value
+// Upper-case a string, return by value.
 static std::string to_upper(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), ::toupper);
     return s;
@@ -33,6 +37,13 @@ static std::string stem_of(const std::string& name) {
     const auto dot = name.rfind('.');
     if (dot == std::string::npos) return name;
     return name.substr(0, dot);
+}
+
+// Save raw bytes verbatim to disk.
+static void save_raw(const std::vector<uint8_t>& data, const std::string& path) {
+    std::ofstream f(path, std::ios::binary);
+    if (!f) throw std::runtime_error("Cannot write: " + path);
+    f.write(reinterpret_cast<const char*>(data.data()), data.size());
 }
 
 int main(int argc, char** argv) {
@@ -105,6 +116,9 @@ int main(int argc, char** argv) {
         const std::string stem = stem_of(e.name);
 
         try {
+            // ----------------------------------------------------------------
+            // ICN — generic sprites (UI, cursors, portraits, etc.)
+            // ----------------------------------------------------------------
             if (ext == ".ICN") {
                 const std::string dir = out_root + "/" + stem;
                 std::cout << "  ICN  " << e.name << "  ->  " << dir << "/\n";
@@ -112,6 +126,63 @@ int main(int argc, char** argv) {
                 auto icn = homm1::decode_icn(raw, palette);
                 homm1::save_icn(icn, dir);
 
+            // ----------------------------------------------------------------
+            // STD — creature standing/attack animations with compositing
+            // ----------------------------------------------------------------
+            } else if (ext == ".STD") {
+                const std::string dir = out_root + "/" + stem + ".std";
+                std::cout << "  STD  " << e.name << "  ->  " << dir << "/\n";
+                const auto raw = arc.get(e.name);
+                homm1::decode_and_save_std(raw, palette, dir, stem);
+
+            // ----------------------------------------------------------------
+            // WLK — walk cycle animation  (plain ICN frames, no compositing)
+            // WIP — death/wipe animation  (plain ICN frames, no compositing)
+            // ----------------------------------------------------------------
+            } else if (ext == ".WLK" || ext == ".WIP") {
+                const std::string dir = out_root + "/" + stem
+                                      + (ext == ".WLK" ? ".wlk" : ".wip");
+                std::cout << "  " << ext.substr(1) << "  "
+                          << e.name << "  ->  " << dir << "/\n";
+                const auto raw = arc.get(e.name);
+                auto icn = homm1::decode_icn(raw, palette);
+                homm1::save_icn(icn, dir);
+
+            // ----------------------------------------------------------------
+            // ATK — ranged attack animation with compositing + projectiles
+            // ----------------------------------------------------------------
+            } else if (ext == ".ATK") {
+                const std::string dir = out_root + "/" + stem + ".atk";
+                std::cout << "  ATK  " << e.name << "  ->  " << dir << "/\n";
+                const auto raw = arc.get(e.name);
+                homm1::decode_and_save_atk(raw, palette, dir);
+
+            // ----------------------------------------------------------------
+            // OBJ — battle scene object sprites  (plain ICN encoding)
+            // XTL — battle hex tile sprites       (plain ICN encoding)
+            // ----------------------------------------------------------------
+            } else if (ext == ".OBJ" || ext == ".XTL") {
+                const std::string tag = (ext == ".OBJ") ? ".obj" : ".xtl";
+                const std::string dir = out_root + "/" + stem + tag;
+                std::cout << "  " << ext.substr(1) << "  "
+                          << e.name << "  ->  " << dir << "/\n";
+                const auto raw = arc.get(e.name);
+                auto icn = homm1::decode_icn(raw, palette);
+                homm1::save_icn(icn, dir);
+
+            // ----------------------------------------------------------------
+            // BKG — battle background sky strip
+            // ----------------------------------------------------------------
+            } else if (ext == ".BKG") {
+                const std::string out_path = out_root + "/" + stem + "_bkg.png";
+                std::cout << "  BKG  " << e.name << "  ->  " << out_path << "\n";
+                const auto raw = arc.get(e.name);
+                const auto img = homm1::decode_bkg(raw, palette);
+                homm1::save_png(img, out_path);
+
+            // ----------------------------------------------------------------
+            // TIL — map terrain tiles
+            // ----------------------------------------------------------------
             } else if (ext == ".TIL") {
                 const std::string dir = out_root + "/" + stem;
                 std::cout << "  TIL  " << e.name << "  ->  " << dir << "/\n";
@@ -119,6 +190,9 @@ int main(int argc, char** argv) {
                 auto til = homm1::decode_til(raw, palette);
                 homm1::save_til(til, dir);
 
+            // ----------------------------------------------------------------
+            // BMP — custom HoMM palette-indexed background images
+            // ----------------------------------------------------------------
             } else if (ext == ".BMP") {
                 const std::string out_path = out_root + "/" + stem + ".png";
                 std::cout << "  BMP  " << e.name << "  ->  " << out_path << "\n";
@@ -126,16 +200,41 @@ int main(int argc, char** argv) {
                 auto img = homm1::decode_bmp(raw, palette);
                 homm1::save_png(img, out_path);
 
+            // ----------------------------------------------------------------
+            // 82M — raw PCM audio, converted to WAV
+            // ----------------------------------------------------------------
+            } else if (ext == ".82M") {
+                const std::string out_path = out_root + "/" + stem + ".wav";
+                std::cout << "  SND  " << e.name << "  ->  " << out_path << "\n";
+                const auto raw = arc.get(e.name);
+                try {
+                    homm1::decode_82m_to_wav(raw, out_path);
+                } catch (const std::exception& wav_ex) {
+                    // Fallback: save verbatim so nothing is lost.
+                    std::cerr << "    WARNING: WAV conversion failed (" << wav_ex.what()
+                              << ") — saving raw bytes instead.\n";
+                    save_raw(raw, out_root + "/" + e.name);
+                }
+
+            // ----------------------------------------------------------------
+            // PAL — palette file (save verbatim for reference)
+            // ----------------------------------------------------------------
+            } else if (ext == ".PAL") {
+                std::cout << "  PAL  " << e.name << "  ->  "
+                          << out_root + "/" + e.name << "\n";
+                save_raw(arc.get(e.name), out_root + "/" + e.name);
+
+            // ----------------------------------------------------------------
+            // Everything else: BIN, MAP, MSE, TOD, etc. — save verbatim.
+            // ----------------------------------------------------------------
             } else {
-                // Save verbatim: PAL, 82M, BIN, MAP, etc.
                 const std::string out_path = out_root + "/" + e.name;
                 std::cout << "  RAW  " << e.name << "  ->  " << out_path << "\n";
-                const auto raw = arc.get(e.name);
-                std::ofstream f(out_path, std::ios::binary);
-                if (!f) throw std::runtime_error("Cannot write: " + out_path);
-                f.write(reinterpret_cast<const char*>(raw.data()), raw.size());
+                save_raw(arc.get(e.name), out_path);
             }
+
             ++n_ok;
+
         } catch (const std::exception& ex) {
             std::cerr << "  ERROR processing '" << e.name << "': " << ex.what() << "\n";
             ++n_err;

@@ -20,9 +20,9 @@ python homm1_extract.py heroes.agg
 python homm1_extract.py editor.agg
 ```
 
-All files are extracted into a subdirectory named after the archive (e.g. `heroes/`). Image files are decoded to PNG. Sound and raw data files are saved verbatim.
+All files are extracted into a subdirectory named after the archive (e.g. `heroes/`). Image files are decoded to PNG. Sound files are converted to WAV. Raw data files are saved verbatim.
 
-Tested on the HEROES.AGG file from the retail version from good old games (GOG), the windows 95 editor (editor.agg), and the HOMM 1 Demo version HEROES.AGG files. The demo is included in the repsitory. The AGG files seem to be identical for the Demo and the full game. I believe the demo version would only let you play 1 month in game time, so 28 days.
+Tested on the HEROES.AGG file from the retail version from good old games (GOG), the windows 95 editor (editor.agg), and the HOMM 1 Demo version HEROES.AGG files. The demo is included in the repository. The AGG files seem to be identical for the Demo and the full game. I believe the demo version would only let you play 1 month in game time, so 28 days.
 
 ---
 
@@ -41,6 +41,24 @@ cd build
 cmake .. && make -j$(sysctl -n hw.ncpu)
 ```
 
+On Windows:
+Install vcpkg if you don't have it
+```dos
+git clone https://github.com/microsoft/vcpkg.git C:\dev\vcpkg
+C:\dev\vcpkg\bootstrap-vcpkg.bat
+```
+Install zlib for x64 Windows
+```dos
+C:\dev\vcpkg\vcpkg install zlib:x64-windows
+```
+
+Then build homm1 executable:
+```dos
+rmdir /s /q build
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:\dev\vcpkg\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows
+cmake --build build  --parallel
+```
+
 Unix version is untested right now, but theoretically, to use it, rename CMakeLists_unix.txt to CMakeLists.txt and make sure you have Cmake and zlib installed.
 
 ## Usage
@@ -49,6 +67,14 @@ Assuming Heroes.agg is copied into the program directory (one level below build/
 ```bash
 ./homm1 ../Heroes.agg 
 ```
+
+On windows, the executable appears at build/Debug/homm1.exe 
+I test it there by copying Heroes.agg to build/Debug/ and running:
+
+```dos
+./homm1.exe Heroes.agg
+```
+and the output is extracted to the Heroes directory.
 
 ---
 
@@ -203,15 +229,159 @@ Each pixel value is an index into the 256-color palette loaded from `kb.pal`.
 
 ---
 
-### 82M — Sound Effects
+### STD — Creature Standing & Attack Animations
 
-Raw audio data. Saved verbatim with the original filename. The exact encoding format (sample rate, bit depth, channels) varies by file and is not decoded by this tool.
+Each creature in the game has a `.std` file containing all frames needed for its idle and combat animations. The file uses the standard ICN encoding (same header format, same pixel encoding). The extractor decodes every frame to an individual PNG and additionally produces **composite attack frames** by combining the base pose with each attack overlay, using the `offsetX`/`offsetY` values from each sprite header to align them on a shared canvas.
+
+#### Compositing
+
+Every sprite in an ICN-family file shares a common anchor point at `(0, 0)` — conceptually the creature's feet or center-bottom. Each sprite header's `offsetX`/`offsetY` gives the position of that sprite's top-left corner relative to the anchor, with `offsetY` being negative (upward). To composite two or more sprites together the extractor:
+
+1. Computes the bounding box that encloses all sprites: `min(offsetX)` to `max(offsetX + width)` and `min(offsetY)` to `max(offsetY + height)`.
+2. Creates a transparent RGBA canvas of that size.
+3. Pastes each sprite at `(offsetX − min_x, offsetY − min_y)`.
+
+This produces a correctly aligned composite regardless of whether the overlay is taller, wider, or offset to either side of the base frame.
+
+#### Standard frame layout (18 frames, most creatures)
+
+| Frame | Role |
+|---|---|
+| F0 | Noise / ignored |
+| F1 | Standing (idle) |
+| F2 | Death |
+| F3 | Attack frame 1 |
+| F4 | Attack frame 2 |
+| F5 | Base pose — used as the bottom layer for composite attack frames |
+| F6 | Attack-up overlay |
+| F7 | Attack-across overlay |
+| F8 | Attack-down overlay |
+| F9 | 1×1 sentinel (ignored) |
+| F10–F13 | Shadow strips for F1–F4 |
+| F14 | 1×1 sentinel (ignored) |
+| F15–F17 | Shadow strips for F6–F8 |
+
+The extractor outputs `composite_atk_up.png`, `composite_atk_across.png`, and `composite_atk_down.png` — each being F5 composited with the corresponding overlay frame.
+
+#### Special case: flying creatures (gargoyle, griffin, ghost) + Wolf
+
+For these four creatures, **F5 is not a full body sprite**. Instead it is a tiny patch of a few pixels — a shadow anchor that the game engine uses as a positional reference for the attack overlays. F6, F7, and F8 contain the complete creature art for each attack direction and are composited directly on top of this anchor. The resulting composite PNGs look correct: the small anchor contributes almost nothing visually, and the large overlay frames land at the right position on the canvas.
+
+This was a non-obvious discovery during decoding. The tiny F5 dimensions (e.g. wolf's F5 is only 4×11 pixels) would have caused it to be silently discarded if it had been filtered out as a "shadow frame" — which would have broken the compositing for these creatures entirely. The fix was to keep all frames in the decoded sprite table regardless of size, and only filter small frames from the raw per-frame PNG output, not from the compositing step.
+
+#### Special case: extended creatures (dragon, phoenix, cyclops)
+
+These three creatures have **33 frames** instead of 18, providing three complete sets of attack overlays (representing different animation stages of a breath weapon or multi-part attack) rather than one:
+
+| Frame | Role |
+|---|---|
+| F0–F4 | Noise, standing, death, attack 1, attack 2 (same as standard) |
+| F5 | Base pose |
+| F6–F8 | Attack overlay set 0 (up / across / down) |
+| F9–F11 | Attack overlay set 1 |
+| F12–F14 | Attack overlay set 2 |
+| F15 | 1×1 sentinel |
+| F16–F19 | Shadow strips for F1–F4 |
+| F20 | 1×1 sentinel |
+| F21–F29 | Shadow strips for overlay sets 0, 1, and 2 |
+| F30–F32 | Additional shadow strips (identical copies of F27–F29) |
+
+The extractor produces nine composite PNGs for these creatures: `composite_atk0_up.png`, `composite_atk0_across.png`, `composite_atk0_down.png`, and likewise for sets 1 and 2.
+
+#### Special case: hydra
+
+The hydra has **no base frame and no overlay compositing**. Its 16 frames are all independent full-body poses. The extractor outputs them as plain numbered PNGs with no composites.
+
+| Frame | Role |
+|---|---|
+| F0 | Noise / ignored |
+| F1–F7 | Seven independent animation frames |
+| F8 | 1×1 sentinel |
+| F9–F15 | Shadow strips for F1–F7 |
 
 ---
 
-### Other file types
+### WLK — Walk Animation / WIP — Death Animation
 
-All other file types (`BIN`, `MSE`, `STD`, `WLK`, `ATK`, `OBJ`, `BKG`, `TOD`, `WIP`, `MAP`, `BIN`, etc.) are saved verbatim. Their formats are not decoded by this tool.
+Walk cycle and death (wipe) animations use the same ICN encoding as all other sprite types. The extractor decodes them to a directory of numbered PNGs with a `spec.xml`. No compositing is performed — each frame is a standalone full-body pose.
+
+---
+
+### ATK — Ranged Attack Animations
+
+`.atk` files cover creatures with ranged attacks (archer, druid, elf, centaur, orc, troll). They use the same ICN encoding and the same compositing approach as STD files.
+
+**ATK frame layout:**
+
+| Frame | Role |
+|---|---|
+| F0 | Base pose (always visible) |
+| F1–F4 | Attack animation overlays, composited on top of F0 |
+| F5–F9 | Projectile sprites (arrow, bolt, fireball, etc.) — exported individually |
+
+The extractor outputs `composite_atk_F1.png` through `composite_atk_F4.png` (base + each overlay), plus `projectile_F5.png` through `projectile_F9.png` for whichever projectile frames are present. All frames are also exported as individual numbered PNGs.
+
+---
+
+### BKG — Battle Background
+
+`.bkg` files are the sky-strip images shown at the top of the battle screen. They use exactly the same raw palette-indexed format as the custom BMP files.
+
+**Layout:**
+
+| Field | Type | Description |
+|---|---|---|
+| Magic | `0x21 0x00` | Same fixed identifier as BMP |
+| `width` | `u16` | Image width (typically 640) |
+| `height` | `u16` | Image height (typically 102) |
+| Pixel data | `width × height bytes` | Palette index per pixel, row-major |
+
+Each `.bkg` file is decoded to a single PNG named `<stem>_bkg.png`.
+
+---
+
+### XTL — Battle Hex Tiles
+
+`.xtl` files contain the hex tile shapes used to build the battle grid. They use the standard ICN encoding (same header, same pixel commands, same `offsetX`/`offsetY` fields) and are decoded to a directory of numbered PNGs with a `spec.xml`.
+
+A typical `.xtl` file contains 11 frames:
+
+| Frames | Role |
+|---|---|
+| F0 | Left-edge partial tile (narrow) |
+| F1 | Left-edge partial tile (alternate) |
+| F2 | Right-edge partial tile |
+| F3 | Right-edge partial tile (alternate) |
+| F4 | Wide edge variant |
+| F5–F10 | Full 78×99 hex tile variants (2 generic + 4 flavor/detail variants) |
+
+The battle scene assembler (`homm1_battle_scene.py`) uses the full tile variants (F5–F10) weighted 75% generic and 25% flavor to randomly populate the grid, and the edge tiles (F0–F4) to fill the partial hexes at the left and right borders.
+
+---
+
+### OBJ — Battle Scene Objects
+
+`.obj` files contain the decorative objects placed on the battle grid — trees, rocks, ruins, and similar terrain features. They use the standard ICN encoding and are decoded to a directory of numbered PNGs with a `spec.xml`.
+
+Each frame in an `.obj` file is an independent object sprite. The `offsetX`/`offsetY` values in the sprite headers give the anchor offset so the object can be correctly centered on its hex tile by the battle scene assembler.
+
+---
+
+### 82M — Sound Effects
+
+`.82m` files are raw PCM audio. The extractor converts them directly to standard WAV files using Python's built-in `wave` module — no additional dependencies required.
+
+**Format detection:** The extractor first checks whether the file begins with the four-byte magic `"82M "`. If present, the sample rate (`u32`), channel count (`u16`), and bit depth (`u16`) are read from the following 8 bytes. If the magic is absent — which is the normal case for HoMM1 AGG files — the extractor falls back to the observed defaults:
+
+| Parameter | Default |
+|---|---|
+| Sample rate | 11025 Hz |
+| Channels | 1 (mono) |
+| Bit depth | 16-bit signed PCM |
+
+Each `.82m` file is saved as `<stem>.wav` alongside all other extracted assets. If WAV conversion fails for any reason the raw bytes are saved as a fallback so nothing is lost.
+
+> If a converted WAV sounds wrong (wrong pitch or noise), the file likely uses 8-bit unsigned PCM instead of 16-bit. The defaults `_82M_BITS_PER_SAMPLE` near the top of the decoder function can be adjusted per-file.
 
 ---
 
@@ -219,20 +389,52 @@ All other file types (`BIN`, `MSE`, `STD`, `WLK`, `ATK`, `OBJ`, `BKG`, `TOD`, `W
 
 ```
 heroes/
-├── palette_swatch.png      # Visual color swatch of the loaded palette
-├── kb.pal                  # Raw palette file
-├── overmain.png            # Decoded BMP backgrounds
-├── ground32/               # Decoded TIL tiles (one PNG per tile)
+├── palette_swatch.png          # Visual color swatch of the loaded palette
+├── kb.pal                      # Raw palette file
+├── overmain.png                # Decoded BMP backgrounds
+├── ground32/                   # Decoded TIL tiles (one PNG per tile)
 │   ├── 0000.png
-│   ├── 0001.png
 │   └── ...
-├── advmice/                # Decoded ICN sprites (one PNG per frame)
+├── advmice/                    # Decoded ICN sprites (one PNG per frame)
 │   ├── 0000.png
-│   ├── 0001.png
-│   ├── spec.xml            # Sprite metadata (offsets, sizes, types)
+│   ├── spec.xml                # Sprite metadata (offsets, sizes, types)
 │   └── ...
-├── wsnd00.82m              # Raw sound files
-└── ...                     # All other files saved verbatim
+├── archer.std/                 # Decoded STD creature animation frames
+│   ├── 0001.png                # Standing
+│   ├── 0002.png                # Death
+│   ├── 0003.png                # Attack frame 1
+│   ├── 0004.png                # Attack frame 2
+│   ├── 0005.png                # Base pose
+│   ├── 0006.png                # Attack-up overlay (raw)
+│   ├── 0007.png                # Attack-across overlay (raw)
+│   ├── 0008.png                # Attack-down overlay (raw)
+│   ├── composite_atk_up.png    # Base + attack-up composited
+│   ├── composite_atk_across.png
+│   ├── composite_atk_down.png
+│   └── spec.xml
+├── dragon.std/                 # Extended creature (3 attack sets)
+│   ├── composite_atk0_up.png
+│   ├── composite_atk0_across.png
+│   ├── composite_atk0_down.png
+│   ├── composite_atk1_up.png   # ... and so on for sets 1 and 2
+│   └── ...
+├── archer.atk/                 # Decoded ATK ranged attack frames
+│   ├── composite_atk_F1.png    # Base + overlay composited
+│   ├── composite_atk_F2.png
+│   ├── composite_atk_F3.png
+│   ├── composite_atk_F4.png
+│   ├── projectile_F5.png       # Arrow / bolt sprite
+│   └── spec.xml
+├── grass.xtl/                  # Decoded battle hex tiles
+│   ├── 0000.png                # Edge tile variants
+│   ├── 0005.png                # Full hex tile (generic)
+│   └── spec.xml
+├── grass.obj/                  # Decoded battle scene objects
+│   ├── 0000.png
+│   └── spec.xml
+├── frstwgrs_bkg.png            # Decoded battle background sky strip
+├── wsnd00.wav                  # Converted sound files (WAV)
+└── ...                         # All other files saved verbatim
 ```
 
 ---
@@ -241,9 +443,7 @@ heroes/
 
 - Some sprites in the archive have truncated pixel data. These are decoded as far as possible and the remaining pixels are left transparent.
 - Color cycling (palette animation) is not simulated — exported PNGs show the static palette colors.
-- `82M` sound files are saved raw and require a separate tool to play back.
-- `XMI` / MIDI music files are not present in HoMM I (they are a HoMM II feature).
-
+- If a `.82m` WAV conversion produces noise or wrong pitch, the file may use 8-bit unsigned PCM rather than the default 16-bit. Adjust `_82M_BITS_PER_SAMPLE` in the source.
 
 ## Credits
 
@@ -254,4 +454,4 @@ https://thaddeus002.github.io/fheroes2-WoT/infos/informations.html - there were 
 
 ## License
 
-This code is released under the Apache License, Version 2.0. 
+This code is released under the Apache License, Version 2.0.
