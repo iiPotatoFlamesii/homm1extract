@@ -128,7 +128,7 @@ static void write_spec(const IcnFile& icn,
             << " offsetY=\"" << h.offset_y << "\""
             << " width=\""   << h.width    << "\""
             << " height=\""  << h.height   << "\""
-            << " type=\""    << static_cast<int>(h.type) << "\"/>\n";
+            << "/>\n";
     }
     if (!composites.empty()) {
         xml << "  <!-- Composite attack frames (base + overlay) -->\n";
@@ -146,7 +146,7 @@ void decode_and_save_std(const std::vector<uint8_t>& raw,
                          const Palette& pal,
                          const std::string& out_dir,
                          const std::string& stem) {
-    const IcnFile icn = decode_icn(raw, pal);
+    const IcnFile icn = decode_icn(raw, pal, stem);
     const int n = static_cast<int>(icn.frames.size());
     if (n == 0) return;
 

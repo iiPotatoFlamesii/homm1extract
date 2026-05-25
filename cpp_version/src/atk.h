@@ -19,6 +19,7 @@ namespace homm1 {
 //   spec.xml
 void decode_and_save_atk(const std::vector<uint8_t>& raw,
                          const Palette& pal,
-                         const std::string& out_dir);
+                         const std::string& out_dir,
+                         const std::string& stem);
 
 } // namespace homm1

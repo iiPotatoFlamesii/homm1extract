@@ -155,11 +155,9 @@ ICN files contain one or more sprites (animation frames). Each ICN file decodes 
 | `offsetY` | `s16` | Hotspot Y offset for game engine positioning |
 | `width` | `u16` | Sprite width in pixels |
 | `height` | `u16` | Sprite height in pixels |
-| `packed` | `u32` | High byte = sprite type; low 24 bits = `data_off` |
+| `dOffset` | `u32` | Relative offset from ICN header |
 
-The `packed` field encodes two values:
-- **type** = `packed >> 24` — `0` for normal color sprites, `32` for monochrome
-- **data_off** = `packed & 0x00FFFFFF` — byte offset of this sprite's pixel data, **relative to byte 6 of the ICN file** (i.e. right after the 6-byte global header)
+**dOffset** — byte offset of this sprite's pixel data, **relative to byte 6 of the ICN file** (i.e. right after the 6-byte global header)
 
 > **Important:** Sprite headers are not necessarily stored in the same order as their pixel data on disk. The `data_off` values may not be monotonically increasing. The end boundary for each sprite's data is found by sorting all `data_off` values and taking the next larger value, rather than assuming `headers[i+1]` is adjacent on disk.
 
@@ -184,6 +182,8 @@ The `packed` field encodes two values:
 | `0x81`–`0xFF` | Skip `N - 0x80` transparent pixels |
 
 All unspecified pixels default to fully transparent. `offsetX`/`offsetY` are written to `spec.xml` for reference but do not affect the PNG canvas size — the PNG is always exactly `width × height` pixels.
+
+> **Note:** There has been no reliable flag about what pixel encoding is used for each sprite. A list of all monochromatic sprites is kept in the program; there is no way to determine from the RLE sequence that a sprite is encoded as monochromatic, or in color.
 
 ---
 

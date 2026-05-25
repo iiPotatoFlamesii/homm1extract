@@ -217,8 +217,7 @@ def save_palette_swatch(palette, path):
 #   s16  offsetY
 #   u16  width
 #   u16  height
-#   u32  packed     -- high byte = type (0=normal, 32=monochrome)
-#                      low 24 bits = data_off (relative to file byte 6)
+#   u32  dOffset    -- data offset (relative to file byte 6)
 #
 # Pixel encoding (normal sprites) - HoMM1 format:
 #   0x00        end of line; advance to start of next row
@@ -228,14 +227,14 @@ def save_palette_swatch(palette, path):
 #               Note: unlike HoMM2, there are no shadow or RLE commands.
 #               The full 0x81-0xFF range is purely transparent skip.
 #
-# Pixel encoding (monochrome, type=32):
+# Pixel encoding (monochrome):
 #   0x00        end of line
 #   0x01-0x7F   N black pixels
 #   0x80        end of sprite data
 #   0x81-0xFF   skip (N-0x80) transparent pixels
 # ===========================================================================
 
-def _decode_one_sprite(icn_data, hdr, palette):
+def _decode_one_sprite(icn_data, hdr, palette, mono=False):
     """
     Decode a single sprite from an ICN/STD/ATK/etc. file.
 
@@ -269,35 +268,27 @@ def _decode_one_sprite(icn_data, hdr, palette):
 
     p     = 6 + hdr['dof']
     p_end = data_end(hdr['dof'])
-    mono  = (hdr['type'] == 32)
     x, y  = 0, 0
 
     while p < p_end:
         cmd = icn_data[p]; p += 1
 
-        if mono:
-            if cmd == 0x00:
-                x = 0; y += 1
-            elif cmd == 0x80:
-                break
-            elif 0x01 <= cmd <= 0x7F:
+        if cmd == 0x00:
+            x = 0; y += 1
+        elif cmd == 0x80:
+            break
+        elif 0x01 <= cmd <= 0x7F:
+            if mono:
                 for _ in range(cmd):
                     set_px(x, y, 0, 0, 0, 255); x += 1
             else:
-                x += cmd - 0x80
-        else:
-            if cmd == 0x00:
-                x = 0; y += 1
-            elif cmd == 0x80:
-                break
-            elif 0x01 <= cmd <= 0x7F:
                 for _ in range(cmd):
                     if p >= p_end: break
                     ci = icn_data[p]; p += 1
                     cr, cg, cb = palette[ci]
                     set_px(x, y, cr, cg, cb, 255); x += 1
-            else:
-                x += cmd - 0x80
+        else:
+            x += cmd - 0x80
 
     return Image.frombytes('RGBA', (sw, sh), bytes(buf))
 
@@ -324,10 +315,9 @@ def _read_icn_headers(icn_data):
         w,    pos = u16(icn_data, pos)
         h,    pos = u16(icn_data, pos)
         pack, pos = u32(icn_data, pos)
-        t   = (pack >> 24) & 0xFF
-        dof =  pack & 0x00FFFFFF
+        dof =  pack
         headers.append({'ox': ox, 'oy': oy, 'w': w, 'h': h,
-                        'type': t, 'dof': dof, '_sorted_dofs': None})
+                        'dof': dof, '_sorted_dofs': None})
 
     sorted_dofs = sorted(set(h['dof'] for h in headers))
     for h in headers:
@@ -499,8 +489,7 @@ def _write_std_spec(out_dir, n_sprites, headers, composites):
             f.write(
                 f'  <sprite id="{idx}" file="{idx:04d}.png"'
                 f' offsetX="{hdr["ox"]}" offsetY="{hdr["oy"]}"'
-                f' width="{hdr["w"]}" height="{hdr["h"]}"'
-                f' type="{hdr["type"]}"/>\n'
+                f' width="{hdr["w"]}" height="{hdr["h"]}"/>\n'
             )
         if composites:
             f.write('  <!-- Composite attack frames (base + overlay) -->\n')
@@ -537,7 +526,11 @@ def decode_atk(icn_data, palette, out_dir, stem):
     # Decode all sprites (keep all – projectiles may be small)
     sprites = {}
     for idx, hdr in enumerate(headers):
-        sprites[idx] = _decode_one_sprite(icn_data, hdr, palette)
+        is_mono = False
+        if idx > 9:
+            is_mono = True
+
+        sprites[idx] = _decode_one_sprite(icn_data, hdr, palette, mono=is_mono)
 
     # -----------------------------------------------------------------------
     # Write individual frame PNGs
@@ -595,7 +588,7 @@ def decode_atk(icn_data, palette, out_dir, stem):
                 f'  <sprite id="{idx}" file="{idx:04d}.png"'
                 f' offsetX="{hdr["ox"]}" offsetY="{hdr["oy"]}"'
                 f' width="{hdr["w"]}" height="{hdr["h"]}"'
-                f' type="{hdr["type"]}"{role}/>\n'
+                f'{role}/>\n'
             )
         if composites:
             f.write('  <!-- Composite attack frames (base F0 + overlay Fn) -->\n')
@@ -611,6 +604,15 @@ def decode_atk(icn_data, palette, out_dir, stem):
 # ===========================================================================
 # Generic ICN sprite decoder (for ICN / WLK / WIP)
 # ===========================================================================
+
+# Global sprites indicate the entire sprite file should be monochromatic
+GLOBAL_MONO_SPRITES = ["losewalk", "font", "smalfont", "radar", "shadow32"]
+# Sub sprites indicate that only specific sprites should be monochromatic
+SUB_MONO_SPRITES = {
+    "swapbtn": [2], 
+    "locators": [20],
+    "catapult": [15, 16]
+}
 
 def decode_icn(icn_data, palette, out_dir):
     if not PIL_AVAILABLE:
@@ -632,12 +634,25 @@ def decode_icn(icn_data, palette, out_dir):
                 return 6 + d
         return len(icn_data)
 
+    icn_name = Path(out_dir).stem
+    ext = Path(out_dir).suffix.upper()
+    is_global_mono = (icn_name in GLOBAL_MONO_SPRITES)
+
     for idx, hdr in enumerate(headers):
         sw, sh = hdr['w'], hdr['h']
         if sw == 0 or sh == 0:
             continue
 
-        img = _decode_one_sprite(icn_data, hdr, palette)
+        is_sub_mono = False
+        if not SUB_MONO_SPRITES.get(icn_name) is None and idx in SUB_MONO_SPRITES[icn_name]:
+            is_sub_mono = True
+
+        if ext == ".WLK" and idx > 5:
+            is_sub_mono = True
+
+        sprite_is_mono = is_global_mono or is_sub_mono
+
+        img = _decode_one_sprite(icn_data, hdr, palette, mono=sprite_is_mono)
         if img is not None:
             img.save(os.path.join(out_dir, f'{idx:04d}.png'))
 
@@ -648,8 +663,7 @@ def decode_icn(icn_data, palette, out_dir):
             f.write(
                 f'  <sprite id="{idx}" file="{idx:04d}.png"'
                 f' offsetX="{hdr["ox"]}" offsetY="{hdr["oy"]}"'
-                f' width="{hdr["w"]}" height="{hdr["h"]}"'
-                f' type="{hdr["type"]}"/>\n'
+                f' width="{hdr["w"]}" height="{hdr["h"]}"/>\n'
             )
         f.write('</icn>\n')
 

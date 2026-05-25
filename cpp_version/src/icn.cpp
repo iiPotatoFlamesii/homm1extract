@@ -1,4 +1,6 @@
 #include "icn.h"
+#include <map>
+#include <cctype>
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
@@ -23,11 +25,27 @@ static uint32_t r_u32(const uint8_t* d, size_t& p) {
     uint32_t v; std::memcpy(&v, d + p, 4); p += 4; return v;
 }
 
+const std::vector<std::string> GLOBAL_MONO_SPRITES = {"losewalk", "font", "smalfont", "radar", "shadow32"};
+const std::map<std::string, std::vector<uint8_t>> SUB_MONO_SPRITES = {
+    {"swapbtn", {2}},
+    {"locators", {20}},
+    {"catapult", {15, 16}}
+};
+
+std::string uppercase_string(const std::string& in) {
+    std::string result = "";
+    for(int i = 0; i < in.size(); i++) {
+        result += std::toupper((unsigned char)in[i]);
+    }
+
+    return result;
+};
+
 // ---------------------------------------------------------------------------
 // decode_icn
 // ---------------------------------------------------------------------------
 
-IcnFile decode_icn(const std::vector<uint8_t>& raw, const Palette& pal) {
+IcnFile decode_icn(const std::vector<uint8_t>& raw, const Palette& pal, const std::string& icn_name) {
     IcnFile result;
     if (raw.size() < 6)
         throw std::runtime_error("ICN file too small");
@@ -49,8 +67,7 @@ IcnFile decode_icn(const std::vector<uint8_t>& raw, const Palette& pal) {
         h.width    = r_u16(d, pos);
         h.height   = r_u16(d, pos);
         const uint32_t packed = r_u32(d, pos);
-        h.type     = static_cast<uint8_t>((packed >> 24) & 0xFF);
-        h.data_off = packed & 0x00FFFFFFu;
+        h.data_off = packed;
         result.headers.push_back(h);
     }
 
@@ -68,6 +85,9 @@ IcnFile decode_icn(const std::vector<uint8_t>& raw, const Palette& pal) {
 
     result.frames.reserve(n_sprites);
 
+    bool is_global_mono = std::count(GLOBAL_MONO_SPRITES.begin(),
+                                     GLOBAL_MONO_SPRITES.end(), icn_name) > 0;
+
     for (uint16_t idx = 0; idx < n_sprites; ++idx) {
         const SpriteHeader& hdr = result.headers[idx];
         if (hdr.width == 0 || hdr.height == 0) {
@@ -77,43 +97,49 @@ IcnFile decode_icn(const std::vector<uint8_t>& raw, const Palette& pal) {
 
         Image img(hdr.width, hdr.height); // all pixels start transparent
 
+        bool is_sub_mono = false;
+
+        if(SUB_MONO_SPRITES.count(icn_name) > 0) {
+            std::vector<uint8_t> mono_idxs = SUB_MONO_SPRITES.at(icn_name);
+            if(std::count(mono_idxs.begin(), mono_idxs.end(), idx) > 0) {
+                is_sub_mono = true;
+            }
+        }
+
+        size_t extPos = icn_name.find_last_of('.');
+        if(idx > 5 && extPos != std::string::npos) {
+            std::string fileExt = uppercase_string(icn_name.substr(extPos));
+            if(fileExt == ".WLK") {
+                is_sub_mono = true;
+            }
+        }
+
         size_t p       = 6 + hdr.data_off;
         size_t p_end   = data_end_for(hdr.data_off);
-        const bool mono = (hdr.type == 32);
+        const bool mono = is_global_mono || is_sub_mono;
         int x = 0, y = 0;
 
         while (p < p_end) {
             const uint8_t cmd = d[p++];
 
-            if (mono) {
-                if (cmd == 0x00) {
-                    x = 0; ++y;
-                } else if (cmd == 0x80) {
-                    break;
-                } else if (cmd >= 0x01 && cmd <= 0x7F) {
+            if (cmd == 0x00) {
+                x = 0; ++y;
+            } else if (cmd == 0x80) {
+                break;
+            } else if (cmd >= 0x01 && cmd <= 0x7F) {
+                if(mono) {
                     for (int n = 0; n < cmd; ++n)
                         img.set_pixel(x++, y, 0, 0, 0, 255);
                 } else {
-                    // 0x81–0xFF: skip (cmd-0x80) transparent pixels
-                    x += cmd - 0x80;
-                }
-            } else {
-                if (cmd == 0x00) {
-                    x = 0; ++y;
-                } else if (cmd == 0x80) {
-                    break;
-                } else if (cmd >= 0x01 && cmd <= 0x7F) {
                     // Literal run: next cmd bytes are palette indices
                     for (int n = 0; n < cmd && p < p_end; ++n) {
                         const uint8_t ci = d[p++];
                         img.set_pixel(x++, y, pal[ci].r, pal[ci].g, pal[ci].b, 255);
                     }
-                } else {
-                    // 0x81–0xFF: skip (cmd-0x80) transparent pixels.
-                    // HoMM1 uses the full range purely for transparency.
-                    // Unlike HoMM2, there are no shadow or RLE sub-commands.
-                    x += cmd - 0x80;
                 }
+            } else {
+                // 0x81–0xFF: skip (cmd-0x80) transparent pixels
+                x += cmd - 0x80;
             }
         }
 
@@ -155,7 +181,7 @@ void save_icn(const IcnFile& icn, const std::string& out_dir) {
             << " offsetY=\"" << h.offset_y << "\""
             << " width=\""   << h.width    << "\""
             << " height=\""  << h.height   << "\""
-            << " type=\""    << static_cast<int>(h.type) << "\"/>\n";
+            << "/>\n";
     }
     xml << "</icn>\n";
 }

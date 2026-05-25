@@ -34,7 +34,7 @@ static std::string ext_of(const std::string& name) {
 
 // Stem: filename without extension.
 static std::string stem_of(const std::string& name) {
-    const auto dot = name.rfind('.');
+    const auto dot = name.find_last_of('.');
     if (dot == std::string::npos) return name;
     return name.substr(0, dot);
 }
@@ -123,7 +123,7 @@ int main(int argc, char** argv) {
                 const std::string dir = out_root + "/" + stem;
                 std::cout << "  ICN  " << e.name << "  ->  " << dir << "/\n";
                 const auto raw = arc.get(e.name);
-                auto icn = homm1::decode_icn(raw, palette);
+                auto icn = homm1::decode_icn(raw, palette, stem);
                 homm1::save_icn(icn, dir);
 
             // ----------------------------------------------------------------
@@ -140,12 +140,13 @@ int main(int argc, char** argv) {
             // WIP — death/wipe animation  (plain ICN frames, no compositing)
             // ----------------------------------------------------------------
             } else if (ext == ".WLK" || ext == ".WIP") {
-                const std::string dir = out_root + "/" + stem
-                                      + (ext == ".WLK" ? ".wlk" : ".wip");
+                const std::string stemExt = stem +
+                                            (ext == ".WLK" ? ".wlk" : ".wip");
+                const std::string dir = out_root + "/" + stemExt;
                 std::cout << "  " << ext.substr(1) << "  "
                           << e.name << "  ->  " << dir << "/\n";
                 const auto raw = arc.get(e.name);
-                auto icn = homm1::decode_icn(raw, palette);
+                auto icn = homm1::decode_icn(raw, palette, stemExt);
                 homm1::save_icn(icn, dir);
 
             // ----------------------------------------------------------------
@@ -155,7 +156,7 @@ int main(int argc, char** argv) {
                 const std::string dir = out_root + "/" + stem + ".atk";
                 std::cout << "  ATK  " << e.name << "  ->  " << dir << "/\n";
                 const auto raw = arc.get(e.name);
-                homm1::decode_and_save_atk(raw, palette, dir);
+                homm1::decode_and_save_atk(raw, palette, dir, stem);
 
             // ----------------------------------------------------------------
             // OBJ — battle scene object sprites  (plain ICN encoding)
@@ -167,7 +168,7 @@ int main(int argc, char** argv) {
                 std::cout << "  " << ext.substr(1) << "  "
                           << e.name << "  ->  " << dir << "/\n";
                 const auto raw = arc.get(e.name);
-                auto icn = homm1::decode_icn(raw, palette);
+                auto icn = homm1::decode_icn(raw, palette, stem);
                 homm1::save_icn(icn, dir);
 
             // ----------------------------------------------------------------
